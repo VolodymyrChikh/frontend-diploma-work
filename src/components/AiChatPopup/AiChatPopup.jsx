@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { apiFetch, apiGet } from "../../api/client";
 
 const AiChatPopup = () => {
     const [isOpen, setIsOpen] = useState(false);
@@ -39,7 +40,7 @@ const AiChatPopup = () => {
         setIsLoading(true);
 
         try {
-            const response = await fetch(`http://localhost:9000/ai/ask?message=${encodeURIComponent(userMessage)}`);
+            const response = await apiFetch(`/ai/ask?message=${encodeURIComponent(userMessage)}`);
             if (!response.ok) {
                 const errorText = await response.text().catch(() => 'Невідома помилка');
                 throw new Error(`Сервер повернув ${response.status}: ${errorText}`);
