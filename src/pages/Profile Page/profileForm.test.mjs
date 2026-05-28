@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  PROFILE_GROUP_OPTIONS,
   createProfileFormState,
   createProfileUpdatePayload,
   getProfileResponseErrorMessage,
@@ -17,7 +16,7 @@ const user = {
   email: 'student@example.com',
   specialtyResponse: { id: 2, name: 'Компʼютерні науки' },
   avatarLink: 'https://example.com/avatar.png',
-  groupName: 'PMI-41',
+  groupResponse: { id: 11, name: 'PMI-41' },
   status: 'ONLINE',
 };
 
@@ -30,7 +29,7 @@ test('normalizeGithubUrl trims links and prefixes missing protocol', () => {
 test('createProfileFormState uses current user data without leaking undefined values', () => {
   assert.deepEqual(createProfileFormState(user), {
     specialtyId: 2,
-    groupName: 'PMI-41',
+    groupId: 11,
     bio: '',
     githubLink: '',
   });
@@ -39,7 +38,7 @@ test('createProfileFormState uses current user data without leaking undefined va
 test('createProfileUpdatePayload preserves immutable profile fields and trims editable fields', () => {
   const payload = createProfileUpdatePayload(user, {
     specialtyId: '3',
-    groupName: '',
+    groupId: '11',
     bio: '  люблю алгоритми  ',
     githubLink: ' github.com/student ',
   });
@@ -49,16 +48,12 @@ test('createProfileUpdatePayload preserves immutable profile fields and trims ed
     lastName: 'Чіх',
     email: 'student@example.com',
     specialtyId: 3,
-    groupName: null,
+    groupId: 11,
     bio: 'люблю алгоритми',
     githubLink: 'https://github.com/student',
     status: 'ONLINE',
     avatarLink: 'https://example.com/avatar.png',
   });
-});
-
-test('profile group options match backend-supported student groups', () => {
-  assert.deepEqual(PROFILE_GROUP_OPTIONS, ['PMI-41', 'PMI-42', 'PMI-43', 'PMI-44', 'PMI-45', 'PMI-46']);
 });
 
 test('getProfileResponseErrorMessage extracts Ukrainian problem details', async () => {

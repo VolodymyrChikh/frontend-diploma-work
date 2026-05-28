@@ -2,8 +2,6 @@ import { getErrorMessage } from '../../utils/messages.js';
 import { readJsonPayload } from '../../utils/apiPayload.js';
 import { AUTH_EXPIRED_MESSAGE, isAuthFailure } from '../../auth/protectedActions.js';
 
-export const PROFILE_GROUP_OPTIONS = ['PMI-41', 'PMI-42', 'PMI-43', 'PMI-44', 'PMI-45', 'PMI-46'];
-
 const DEFAULT_PROFILE_SAVE_ERROR = 'Не вдалося зберегти профіль. Перевірте введені дані.';
 
 export function normalizeGithubUrl(githubLink) {
@@ -19,10 +17,14 @@ export function normalizeGithubUrl(githubLink) {
 export function createProfileFormState(user = {}) {
   return {
     specialtyId: user.specialtyResponse?.id || '',
-    groupName: user.groupName || '',
+    groupId: user.groupResponse?.id || '',
     bio: user.bio || '',
     githubLink: user.githubLink || '',
   };
+}
+
+export function normalizeProfileGroupName(groupName) {
+  return String(groupName || '').trim().replaceAll('_', '-');
 }
 
 export function createProfileUpdatePayload(user = {}, formData = {}) {
@@ -31,7 +33,7 @@ export function createProfileUpdatePayload(user = {}, formData = {}) {
     lastName: user.lastName,
     email: user.email,
     specialtyId: formData.specialtyId ? Number(formData.specialtyId) : null,
-    groupName: formData.groupName?.trim() || null,
+    groupId: formData.groupId ? Number(formData.groupId) : null,
     bio: formData.bio?.trim() || null,
     githubLink: normalizeGithubUrl(formData.githubLink),
     status: user.status || 'offline',

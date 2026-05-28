@@ -9,10 +9,12 @@ import { cn } from '../../ui/cn.js';
 import { AuthContext } from '../../context/auth-context.js';
 
 const WEEK_TYPE_LABELS = {
-	ALL: 'Усі тижні',
+	ALL: 'Щотижня',
 	NUMERATOR: 'Чисельник',
 	DENOMINATOR: 'Знаменник',
 };
+
+const WEEK_FILTER_OPTIONS = ['NUMERATOR', 'DENOMINATOR'];
 
 const WEEK_TYPE_BADGE = {
 	ALL: 'bg-slate-100 text-slate-700 border-slate-200',
@@ -32,15 +34,15 @@ const LESSON_TYPE_BADGE = {
 	PRACTICAL: 'bg-orange-50 text-orange-800 border-orange-200',
 };
 
-const DAY_ORDER = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', 'П’ятниця', 'Субота', 'Неділя'];
+const DAY_ORDER = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', "П'ятниця", 'Субота', 'Неділя'];
 
 function normalizeGroupName(value) {
 	return String(value || '').trim();
 }
 
 function formatTimeRange(entry) {
-	if (entry.time_start && entry.time_end) {
-		return `${entry.time_start} - ${entry.time_end}`;
+	if (entry.timeStart && entry.timeEnd) {
+		return `${entry.timeStart} - ${entry.timeEnd}`;
 	}
 	return 'Час не вказано';
 }
@@ -66,10 +68,16 @@ function Schedule() {
 	const [isLoadingSchedule, setIsLoadingSchedule] = useState(true);
 	const [status, setStatus] = useState(null);
 	const [scheduleDocs, setScheduleDocs] = useState([]);
+	const [lessons, setLessons] = useState([]);
+	const [allGroups, setAllGroups] = useState([]);
 	const [deleteTarget, setDeleteTarget] = useState(null);
 	const [isDeletingSchedule, setIsDeletingSchedule] = useState(false);
 	const [selectedGroup, setSelectedGroup] = useState('');
-	const [weekFilter, setWeekFilter] = useState('ALL');
+	const [weekFilter, setWeekFilter] = useState('NUMERATOR');
+	const [editTarget, setEditTarget] = useState(null);
+	const [isEditingLesson, setIsEditingLesson] = useState(false);
+	const [deleteLessonTarget, setDeleteLessonTarget] = useState(null);
+	const [isDeletingLessonTarget, setIsDeletingLessonTarget] = useState(false);
 
 	const isAdmin = user?.role === 'ROLE_ADMIN';
 
@@ -95,6 +103,13 @@ function Schedule() {
 
 			const data = await response.json();
 			setScheduleDocs(Array.isArray(data) ? data : [data]);
+
+			const groupsResponse = await apiFetch('/api/lessons/groups', { method: 'GET', skipAuth: true });
+			if (groupsResponse.ok) {
+				const groupsData = await groupsResponse.json();
+				setAllGroups(groupsData);
+			}
+
 			setStatus(null);
 		} catch (error) {
 			setStatus(createStatus('error', getErrorMessage(error, 'Не вдалося отримати розклад.')));
@@ -107,13 +122,26 @@ function Schedule() {
 		loadLatestSchedule();
 	}, []);
 
-	const allGroups = useMemo(() => {
-		const groups = new Set();
-		scheduleDocs.forEach((doc) => {
-			(doc.groups || []).forEach((g) => groups.add(normalizeGroupName(g)));
-		});
-		return Array.from(groups).filter(Boolean).sort();
-	}, [scheduleDocs]);
+	useEffect(() => {
+		if (selectedGroup) {
+			const fetchLessons = async () => {
+				try {
+					const res = await apiFetch(`/api/lessons?groupName=${encodeURIComponent(selectedGroup)}`, { method: 'GET', skipAuth: true });
+					if (res.ok) {
+						setLessons(await res.json());
+					} else {
+						setLessons([]);
+					}
+				} catch (e) {
+					console.error('Failed to fetch lessons', e);
+					setLessons([]);
+				}
+			};
+			fetchLessons();
+		} else {
+			setLessons([]);
+		}
+	}, [selectedGroup]);
 
 	useEffect(() => {
 		if (!allGroups.length) {
@@ -171,6 +199,18 @@ function Schedule() {
 			// Clear file input
 			const fileInput = document.getElementById('scheduleFileInput');
 			if (fileInput) fileInput.value = '';
+
+			// Refresh groups
+			const groupsResponse = await apiFetch('/api/lessons/groups', { method: 'GET', skipAuth: true });
+			if (groupsResponse.ok) {
+				setAllGroups(await groupsResponse.json());
+				if (selectedGroup) {
+					// Trigger refetch of current group lessons just in case
+					setSelectedGroup('');
+					setTimeout(() => setSelectedGroup(selectedGroup), 0);
+				}
+			}
+
 			setStatus(createStatus('success', 'Розклад успішно додано.'));
 		} catch (error) {
 			setStatus(createStatus('error', getErrorMessage(error, 'Не вдалося прочитати PDF.')));
@@ -189,6 +229,96 @@ function Schedule() {
 		}
 
 		setDeleteTarget(null);
+	};
+
+	const closeEditModal = () => {
+		if (isEditingLesson) {
+			return;
+		}
+		setEditTarget(null);
+	};
+
+	const closeDeleteLessonModal = () => {
+		if (isDeletingLessonTarget) return;
+		setDeleteLessonTarget(null);
+	};
+
+	const submitEditLesson = async (event) => {
+		event.preventDefault();
+		if (!editTarget) return;
+
+		setIsEditingLesson(true);
+		try {
+			const payload = {
+				...editTarget,
+				teachers: typeof editTarget.teachers === 'string' 
+					? editTarget.teachers.split(',').map(t => t.trim()).filter(Boolean)
+					: editTarget.teachers
+			};
+
+			if (editTarget.id) {
+				const res = await apiFetch(`/api/lessons/${editTarget.id}`, {
+					method: 'PUT',
+					body: JSON.stringify(payload),
+					headers: { 'Content-Type': 'application/json' }
+				});
+
+				if (!res.ok) {
+					const err = await res.text().catch(() => '');
+					throw new Error(err || 'Failed to update lesson');
+				}
+
+				const updatedLesson = await res.json();
+				setLessons(lessons.map(l => l.id === updatedLesson.id ? updatedLesson : l));
+				setStatus(createStatus('success', 'Пару успішно оновлено.'));
+			} else {
+				// Create new lesson
+				const res = await apiFetch(`/api/lessons`, {
+					method: 'POST',
+					body: JSON.stringify(payload),
+					headers: { 'Content-Type': 'application/json' }
+				});
+
+				if (!res.ok) {
+					const err = await res.text().catch(() => '');
+					throw new Error(err || 'Failed to create lesson');
+				}
+
+				const createdLesson = await res.json();
+				setLessons([...lessons, createdLesson]);
+				setStatus(createStatus('success', 'Пару успішно створено.'));
+			}
+			closeEditModal();
+		} catch (error) {
+			setStatus(createStatus('error', getErrorMessage(error, editTarget.id ? 'Не вдалося оновити пару.' : 'Не вдалося створити пару.')));
+		} finally {
+			setIsEditingLesson(false);
+		}
+	};
+
+	const confirmDeleteLesson = async (event) => {
+		event.preventDefault();
+		if (!deleteLessonTarget) return;
+
+		setIsDeletingLessonTarget(true);
+		try {
+			const res = await apiFetch(`/api/lessons/${deleteLessonTarget.id}`, {
+				method: 'DELETE'
+			});
+
+			if (!res.ok) {
+				const errorText = await res.text().catch(() => '');
+				throw new Error(errorText || `Помилка видалення: ${res.status}`);
+			}
+
+			setLessons(lessons.filter(l => l.id !== deleteLessonTarget.id));
+			setStatus(createStatus('info', 'Заняття успішно видалено.'));
+			setDeleteLessonTarget(null);
+		} catch (error) {
+			setStatus(createStatus('error', getErrorMessage(error, 'Не вдалося видалити пару.')));
+		} finally {
+			setIsDeletingLessonTarget(false);
+		}
 	};
 
 	const confirmDeleteSchedule = async (event) => {
@@ -212,6 +342,22 @@ function Schedule() {
 			setScheduleDocs(Array.isArray(data) ? data : []);
 			setStatus(createStatus('info', 'Розклад успішно видалено.'));
 			setDeleteTarget(null);
+
+			// Refresh groups
+			const groupsResponse = await apiFetch('/api/lessons/groups', { method: 'GET', skipAuth: true });
+			if (groupsResponse.ok) {
+				const groupsData = await groupsResponse.json();
+				setAllGroups(groupsData);
+				if (!groupsData.includes(selectedGroup)) {
+					setSelectedGroup(groupsData[0] || '');
+				} else {
+					setSelectedGroup('');
+					setTimeout(() => setSelectedGroup(selectedGroup), 0);
+				}
+			} else {
+				setAllGroups([]);
+				setSelectedGroup('');
+			}
 		} catch (error) {
 			setStatus(createStatus('error', getErrorMessage(error, 'Не вдалося видалити розклад.')));
 		} finally {
@@ -222,51 +368,45 @@ function Schedule() {
 	const availableGroups = allGroups;
 
 	const filteredEntries = useMemo(() => {
-		if (!scheduleDocs.length || !selectedGroup) {
+		if (!lessons.length || !selectedGroup) {
 			return [];
 		}
 
-		let combinedEntries = [];
-		scheduleDocs.forEach((doc) => {
-			if (doc.entries && Array.isArray(doc.entries)) {
-				combinedEntries = combinedEntries.concat(doc.entries);
-			}
-		});
+		let combinedEntries = [...lessons];
 
 		return combinedEntries
-			.filter((entry) => entry.groups?.includes(selectedGroup))
-			.filter((entry) => weekFilter === 'ALL' || entry.week_type === weekFilter)
+			.filter((entry) => entry.weekType === weekFilter || entry.weekType === 'ALL')
 			.sort((a, b) => {
-				const dayIndexA = DAY_ORDER.indexOf(a.day);
-				const dayIndexB = DAY_ORDER.indexOf(b.day);
+				const dayIndexA = DAY_ORDER.indexOf(a.dayOfWeek);
+				const dayIndexB = DAY_ORDER.indexOf(b.dayOfWeek);
 				if (dayIndexA !== dayIndexB) {
 					return (dayIndexA === -1 ? 99 : dayIndexA) - (dayIndexB === -1 ? 99 : dayIndexB);
 				}
 
-				const timeStartA = timeToMinutes(a.time_start);
-				const timeStartB = timeToMinutes(b.time_start);
+				const timeStartA = timeToMinutes(a.timeStart);
+				const timeStartB = timeToMinutes(b.timeStart);
 				if (timeStartA !== timeStartB) {
 					return timeStartA - timeStartB;
 				}
 
-				if (a.pair_number !== b.pair_number) {
-					return (a.pair_number || 0) - (b.pair_number || 0);
+				if (a.pairNumber !== b.pairNumber) {
+					return (a.pairNumber || 0) - (b.pairNumber || 0);
 				}
 
-				const timeEndA = timeToMinutes(a.time_end);
-				const timeEndB = timeToMinutes(b.time_end);
+				const timeEndA = timeToMinutes(a.timeEnd);
+				const timeEndB = timeToMinutes(b.timeEnd);
 				if (timeEndA !== timeEndB) {
 					return timeEndA - timeEndB;
 				}
 
-				return String(a.subject || '').localeCompare(String(b.subject || ''));
+				return String(a.subjectName || '').localeCompare(String(b.subjectName || ''));
 			});
-	}, [scheduleDocs, selectedGroup, weekFilter]);
+	}, [lessons, selectedGroup, weekFilter]);
 
 	const entriesByDay = useMemo(() => {
 		const map = new Map();
 		filteredEntries.forEach((entry) => {
-			const key = entry.day || 'Без дня';
+			const key = entry.dayOfWeek || 'Без дня';
 			if (!map.has(key)) {
 				map.set(key, []);
 			}
@@ -369,47 +509,76 @@ function Schedule() {
 				) : null}
 
 				<AmiPanel className="grid gap-5 p-5 sm:p-6">
-					<div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-						<div className="grid gap-2">
-							<label htmlFor="groupSelect" className="font-sans text-xs/5 font-black uppercase tracking-wide text-muted">
-								Група
-							</label>
-							<select
-								id="groupSelect"
-								value={selectedGroup}
-								onChange={(event) => setSelectedGroup(event.target.value)}
-								className="min-h-12 w-full rounded-ami border border-border bg-white px-4 text-sm/6 font-extrabold text-ink outline-hidden transition focus:border-accent focus:ring-4 focus:ring-accent/15"
-							>
-								{!availableGroups.length ? (
-									<option value="">Завантажте розклад</option>
-								) : null}
-								{availableGroups.map((group) => (
-									<option key={group} value={group}>{group}</option>
-								))}
-							</select>
-						</div>
+					<div className="flex flex-wrap gap-4 items-end justify-between">
+						<div className="flex flex-wrap gap-4 items-end w-full lg:w-auto flex-1">
+							<div className="grid gap-2 flex-1 min-w-[200px]">
+								<label htmlFor="groupSelect" className="font-sans text-xs/5 font-black uppercase tracking-wide text-muted">
+									Група
+								</label>
+								<select
+									id="groupSelect"
+									value={selectedGroup}
+									onChange={(event) => setSelectedGroup(event.target.value)}
+									className="min-h-12 w-full rounded-ami border border-border bg-white px-4 text-sm/6 font-extrabold text-ink outline-hidden transition focus:border-accent focus:ring-4 focus:ring-accent/15"
+								>
+									{!availableGroups.length ? (
+										<option value="">Завантажте розклад</option>
+									) : null}
+									{availableGroups.map((group) => (
+										<option key={group} value={group}>{group}</option>
+									))}
+								</select>
+							</div>
 
-						<div className="grid gap-2">
-							<span className="font-sans text-xs/5 font-black uppercase tracking-wide text-muted">Тиждень</span>
-							<div className="inline-flex w-full rounded-ami border border-border bg-soft p-1">
-								{Object.keys(WEEK_TYPE_LABELS).map((type) => {
-									const isActive = weekFilter === type;
-									return (
-										<button
-											key={type}
-											type="button"
-											onClick={() => setWeekFilter(type)}
-											className={cn(
-												'min-h-10 flex-1 rounded-lg px-4 text-xs/5 font-extrabold transition-[background-color,color,box-shadow] duration-200 ease-out focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)',
-												isActive ? 'bg-white text-ink shadow-[0_1px_2px_rgb(15_23_42/0.08)]' : 'text-muted hover:text-ink',
-											)}
-										>
-											{WEEK_TYPE_LABELS[type]}
-										</button>
-									);
-								})}
+							<div className="grid gap-2 flex-1 min-w-[200px]">
+								<span className="font-sans text-xs/5 font-black uppercase tracking-wide text-muted">Тиждень</span>
+								<div className="inline-flex w-full rounded-ami border border-border bg-soft p-1">
+									{WEEK_FILTER_OPTIONS.map((type) => {
+										const isActive = weekFilter === type;
+										return (
+											<button
+												key={type}
+												type="button"
+												onClick={() => setWeekFilter(type)}
+												className={cn(
+													'min-h-10 flex-1 rounded-lg px-4 text-xs/5 font-extrabold transition-[background-color,color,box-shadow] duration-200 ease-out focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)',
+													isActive ? 'bg-white text-ink shadow-[0_1px_2px_rgb(15_23_42/0.08)]' : 'text-muted hover:text-ink',
+												)}
+											>
+												{WEEK_TYPE_LABELS[type]}
+											</button>
+										);
+									})}
+								</div>
 							</div>
 						</div>
+
+						{isAdmin && selectedGroup && (
+							<div className="shrink-0 w-full lg:w-auto">
+								<AmiButton
+									type="button"
+									onClick={() => setEditTarget({
+										groupName: selectedGroup,
+										subjectName: '',
+										lessonType: '',
+										weekType: 'ALL',
+										dayOfWeek: 'Понеділок',
+										pairNumber: 1,
+										room: '',
+										timeStart: '',
+										timeEnd: '',
+										teachers: ''
+									})}
+									className="w-full lg:w-auto"
+								>
+									<svg viewBox="0 0 24 24" className="mr-2 size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+										<path d="M12 5v14" />
+										<path d="M5 12h14" />
+									</svg>
+									Додати пару
+								</AmiButton>
+							</div>
+						)}
 					</div>
 
 					{!scheduleDocs.length && !isLoadingSchedule ? (
@@ -452,25 +621,25 @@ function Schedule() {
 							</div>
 							<div className="grid gap-3">
 								{entries.map((entry, index) => (
-									<AmiPanel key={`${entry.day}-${entry.pair_number}-${index}`} className="grid gap-3 px-5 py-4">
+									<AmiPanel key={`${entry.dayOfWeek}-${entry.pairNumber}-${index}`} className="grid gap-3 px-5 py-4">
 										<div className="flex flex-wrap items-center gap-2 text-sm/6 font-extrabold text-ink">
 											<span className="inline-flex items-center gap-2 rounded-ami border border-border bg-white px-3 py-1">
-												<span className="text-xs/5 font-black uppercase tracking-wide text-muted">Пара {entry.pair_label || entry.pair_number}</span>
+												<span className="text-xs/5 font-black uppercase tracking-wide text-muted">Пара {entry.pairLabel || entry.pairNumber}</span>
 												<span className="text-ink">{formatTimeRange(entry)}</span>
 											</span>
-											{entry.lesson_type ? (
-												<span className={cn('inline-flex items-center rounded-ami border px-3 py-1 text-xs/5 font-black uppercase tracking-wide', LESSON_TYPE_BADGE[entry.lesson_type] || 'border-border bg-white text-ink')}>
-													{LESSON_TYPE_LABELS[entry.lesson_type] || entry.lesson_type}
+											{entry.lessonType ? (
+												<span className={cn('inline-flex items-center rounded-ami border px-3 py-1 text-xs/5 font-black uppercase tracking-wide', LESSON_TYPE_BADGE[entry.lessonType] || 'border-border bg-white text-ink')}>
+													{LESSON_TYPE_LABELS[entry.lessonType] || entry.lessonType}
 												</span>
 											) : null}
-											{weekFilter === 'ALL' ? (
-												<span className={cn('inline-flex items-center rounded-ami border px-3 py-1 text-xs/5 font-black uppercase tracking-wide', WEEK_TYPE_BADGE[entry.week_type] || 'border-border bg-white text-ink')}>
-													{WEEK_TYPE_LABELS[entry.week_type] || entry.week_type}
+											{entry.weekType === 'ALL' ? (
+												<span className={cn('inline-flex items-center rounded-ami border px-3 py-1 text-xs/5 font-black uppercase tracking-wide', WEEK_TYPE_BADGE[entry.weekType] || 'border-border bg-white text-ink')}>
+													{WEEK_TYPE_LABELS[entry.weekType] || entry.weekType}
 												</span>
 											) : null}
 										</div>
 										<div className="grid gap-2 text-sm/6 font-bold text-muted">
-											<strong className="text-base/7 font-black text-ink">{entry.subject || 'Назва не вказана'}</strong>
+											<strong className="text-base/7 font-black text-ink">{entry.subjectName || 'Назва не вказана'}</strong>
 											<div className="flex flex-wrap gap-3">
 												{entry.room ? (
 													<span className="inline-flex items-center gap-2 rounded-ami border border-border bg-soft px-3 py-1 text-xs/5 font-black uppercase tracking-wide text-muted">
@@ -483,10 +652,40 @@ function Schedule() {
 													</span>
 												) : null}
 											</div>
-											{entry.raw_text ? (
-												<p className="m-0 text-sm/6 font-bold text-muted">{entry.raw_text}</p>
+											{entry.rawText ? (
+												<p className="m-0 text-sm/6 font-bold text-muted">{entry.rawText}</p>
 											) : null}
 										</div>
+										{isAdmin && (
+											<div className="mt-2 flex justify-end gap-3 border-t border-border pt-3">
+												<button
+													type="button"
+													onClick={() => setDeleteLessonTarget(entry)}
+													className="inline-flex items-center gap-1.5 text-xs font-bold text-red-600 hover:text-red-700 transition px-2 py-1 bg-red-50 hover:bg-red-100 rounded"
+												>
+													<svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+														<path d="M3 6h18" />
+														<path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+														<path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+													</svg>
+													Видалити
+												</button>
+												<button
+													type="button"
+													onClick={() => setEditTarget({
+														...entry,
+														teachers: Array.isArray(entry.teachers) ? entry.teachers.join(', ') : entry.teachers || ''
+													})}
+													className="inline-flex items-center gap-1.5 text-xs font-bold text-accent hover:text-accent-dark transition px-2 py-1 bg-accent-soft hover:bg-accent-soft/80 rounded"
+												>
+													<svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+														<path d="M12 20h9" />
+														<path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+													</svg>
+													Редагувати
+												</button>
+											</div>
+										)}
 									</AmiPanel>
 								))}
 							</div>
@@ -526,6 +725,185 @@ function Schedule() {
 							</button>
 							<AmiButton type="submit" loading={isDeletingSchedule}>
 								Видалити
+							</AmiButton>
+						</div>
+					</form>
+				</div>
+			) : null}
+
+			{deleteLessonTarget ? (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+					<form
+						onSubmit={confirmDeleteLesson}
+						className="w-full max-w-xl rounded-ami border border-border bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.22)]"
+					>
+						<div className="grid gap-2">
+							<span className="font-sans text-xs/5 font-black uppercase tracking-wide text-red-600">Підтвердження видалення</span>
+							<h3 className="m-0 font-sans text-2xl/8 font-black text-ink">Видалити заняття?</h3>
+							<p className="m-0 text-sm/6 font-bold text-muted">
+								Заняття <strong className="text-ink">{deleteLessonTarget.subjectName} ({deleteLessonTarget.dayOfWeek}, пара {deleteLessonTarget.pairNumber})</strong> буде видалено для групи <strong className="text-ink">{selectedGroup}</strong>.
+							</p>
+						</div>
+
+						<div className="mt-5 grid gap-2">
+							<p className="m-0 text-sm/6 font-bold text-muted">
+								Ви впевнені? Ця дія незворотна.
+							</p>
+						</div>
+
+						<div className="mt-6 flex flex-wrap justify-end gap-3">
+							<button
+								type="button"
+								onClick={closeDeleteLessonModal}
+								disabled={isDeletingLessonTarget}
+								className="inline-flex min-h-11 items-center gap-2 rounded-ami border border-border bg-white px-4 text-sm/6 font-black text-ink transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+							>
+								Скасувати
+							</button>
+							<button
+								type="submit"
+								disabled={isDeletingLessonTarget}
+								className="inline-flex min-h-11 items-center justify-center gap-2 rounded-ami border border-transparent bg-red-600 px-6 text-sm/6 font-black text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+							>
+								{isDeletingLessonTarget ? 'Видалення...' : 'Видалити'}
+							</button>
+						</div>
+					</form>
+				</div>
+			) : null}
+
+			{editTarget ? (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]">
+					<form
+						onSubmit={submitEditLesson}
+						className="flex flex-col w-full max-w-xl max-h-[90vh] rounded-ami border border-border bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,0.22)]"
+					>
+						<div className="grid gap-2 shrink-0">
+							<h3 className="m-0 font-sans text-2xl/8 font-black text-ink">
+								{editTarget.id ? 'Редагувати заняття' : 'Додати нове заняття'}
+							</h3>
+						</div>
+
+						<div className="mt-5 grid gap-4 overflow-y-auto pr-2 custom-scrollbar">
+							<div className="grid gap-2">
+								<label className="text-sm font-bold text-muted">Предмет</label>
+								<input
+									type="text"
+									required
+									value={editTarget.subjectName || ''}
+									onChange={(e) => setEditTarget({ ...editTarget, subjectName: e.target.value })}
+									className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+								/>
+							</div>
+							<div className="grid grid-cols-2 gap-4">
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">Тип заняття</label>
+									<select
+										value={editTarget.lessonType || ''}
+										onChange={(e) => setEditTarget({ ...editTarget, lessonType: e.target.value })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									>
+										<option value="">Не вказано</option>
+										<option value="LECTURE">Лекція</option>
+										<option value="LAB">Лабораторна</option>
+										<option value="PRACTICAL">Практика</option>
+									</select>
+								</div>
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">Тиждень</label>
+									<select
+										value={editTarget.weekType || 'ALL'}
+										onChange={(e) => setEditTarget({ ...editTarget, weekType: e.target.value })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									>
+										<option value="ALL">Щотижня</option>
+										<option value="NUMERATOR">Чисельник</option>
+										<option value="DENOMINATOR">Знаменник</option>
+									</select>
+								</div>
+							</div>
+							<div className="grid grid-cols-3 gap-4">
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">День</label>
+									<select
+										value={editTarget.dayOfWeek || 'Понеділок'}
+										onChange={(e) => setEditTarget({ ...editTarget, dayOfWeek: e.target.value })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									>
+										{DAY_ORDER.map(day => (
+											<option key={day} value={day}>{day}</option>
+										))}
+									</select>
+								</div>
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">Пара</label>
+									<input
+										type="number"
+										value={editTarget.pairNumber || ''}
+										onChange={(e) => setEditTarget({ ...editTarget, pairNumber: e.target.value ? Number(e.target.value) : null })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									/>
+								</div>
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">Аудиторія</label>
+									<input
+										type="text"
+										value={editTarget.room || ''}
+										onChange={(e) => setEditTarget({ ...editTarget, room: e.target.value })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									/>
+								</div>
+							</div>
+							<div className="grid grid-cols-2 gap-4">
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">Час початку</label>
+									<input
+										type="text"
+										placeholder="13:30"
+										value={editTarget.timeStart || ''}
+										onChange={(e) => setEditTarget({ ...editTarget, timeStart: e.target.value })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									/>
+								</div>
+								<div className="grid gap-2">
+									<label className="text-sm font-bold text-muted">Час кінця</label>
+									<input
+										type="text"
+										placeholder="14:50"
+										value={editTarget.timeEnd || ''}
+										onChange={(e) => setEditTarget({ ...editTarget, timeEnd: e.target.value })}
+										className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+									/>
+								</div>
+							</div>
+							<div className="grid gap-2">
+								<label className="text-sm font-bold text-muted">Викладачі (через кому)</label>
+								<input
+									type="text"
+									value={editTarget.teachers || ''}
+									onChange={(e) => setEditTarget({ ...editTarget, teachers: e.target.value })}
+									className="rounded border border-border px-3 py-2 text-sm text-ink w-full"
+								/>
+							</div>
+							{editTarget.rawText ? (
+								<div className="grid gap-2 p-3 bg-soft rounded border border-border text-xs text-muted">
+									<strong>Оригінальний текст з PDF:</strong>
+									<span>{editTarget.rawText}</span>
+								</div>
+							) : null}
+						</div>
+
+						<div className="mt-6 flex flex-wrap justify-end gap-3 shrink-0">
+							<button
+								type="button"
+								onClick={closeEditModal}
+								disabled={isEditingLesson}
+								className="inline-flex min-h-11 items-center gap-2 rounded-ami border border-border bg-white px-4 text-sm/6 font-black text-ink transition hover:bg-soft disabled:cursor-not-allowed disabled:opacity-60"
+							>
+								Скасувати
+							</button>
+							<AmiButton type="submit" loading={isEditingLesson}>
+								Зберегти
 							</AmiButton>
 						</div>
 					</form>

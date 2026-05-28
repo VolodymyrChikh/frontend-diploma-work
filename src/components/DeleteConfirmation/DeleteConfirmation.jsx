@@ -1,5 +1,6 @@
 import PropTypes from 'prop-types';
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 const NOTIFICATION_TYPES = [
     { value: 'Admin Message', label: 'Повідомлення від адміністратора' },
@@ -44,9 +45,18 @@ function DeleteConfirmation({
         onConfirm({ reason: trimmedReason, notificationType });
     };
 
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-lg rounded-ami bg-white p-6 shadow-lg">
+    return createPortal(
+        <div
+            className="fixed inset-0 z-1000 flex min-h-dvh items-center justify-center overflow-y-auto bg-black/50 p-4"
+            onMouseDown={onCancel}
+        >
+            <div
+                className="w-full max-w-lg rounded-ami bg-white p-6 shadow-lg"
+                onMouseDown={(event) => event.stopPropagation()}
+                role="dialog"
+                aria-modal="true"
+                aria-label={title}
+            >
                 <h3 className="mb-2 text-lg font-black text-ink">{title}</h3>
                 {message && <p className="mb-4 text-sm text-muted">{message}</p>}
 
@@ -84,7 +94,8 @@ function DeleteConfirmation({
                     </button>
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 }
 

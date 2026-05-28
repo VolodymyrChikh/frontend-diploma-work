@@ -90,7 +90,7 @@ function Header(){
                     <li><NavLink to="/course-map" className={getDesktopNavLinkClassName}>Карта курсів</NavLink></li>
                     <li><NavLink to="/about-specialties" className={getDesktopNavLinkClassName}>Про спеціальності</NavLink></li>
                 </ul>
-                <div className="inline-flex items-center gap-3 max-[520px]:gap-2">
+                <div className="inline-flex items-center gap-3 max-[520px]:gap-2 ml-auto">
                     <div className="relative shrink-0">
                         <button
                             type="button"
@@ -133,15 +133,6 @@ function Header(){
                     <BottomIcon type="schedule" />
                     Розклад
                 </NavLink>
-                <Link
-                    to="/create-post"
-                    className="grid size-12 place-self-center rounded-full border border-accent bg-accent text-center text-white no-underline shadow-[0_8px_22px_rgb(155_77_87/0.35)] transition-[background-color,transform,box-shadow] duration-200 ease-out hover:scale-[1.05] hover:bg-accent-strong active:scale-95 active:bg-accent-strong focus-visible:outline-3 focus-visible:outline-offset-3 focus-visible:outline-(--color-focus) motion-reduce:hover:scale-100 motion-reduce:active:scale-100"
-                    aria-label="Створити пост"
-                >
-                    <svg viewBox="0 0 24 24" className="m-auto size-6" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" aria-hidden="true">
-                        <path d="M12 5v14M5 12h14" />
-                    </svg>
-                </Link>
                 <NavLink to="/media" className={getMobileNavLinkClassName}>
                     <BottomIcon type="media" />
                     Медіатека

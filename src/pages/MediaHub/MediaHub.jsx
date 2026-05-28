@@ -109,12 +109,15 @@ function MediaHub() {
   const fileInputRef = useRef(null);
   const searchCacheRef = useRef({ query: "", items: [] });
   const { isAuthenticated, logout, user } = useContext(AuthContext);
+  const isAdmin = user?.role === 'ROLE_ADMIN';
   const navigate = useNavigate();
   const location = useLocation();
 
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [uploadData, setUploadData] = useState(INITIAL_UPLOAD_STATE);
   const [selectedFiles, setSelectedFiles] = useState([]);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [fileName, setFileName] = useState("Жоден файл не вибраний");
   const [isUploading, setIsUploading] = useState(false);
   const [fileError, setFileError] = useState("");
@@ -556,6 +559,40 @@ function MediaHub() {
     window.open(resourceUrl, "_blank", "noopener,noreferrer");
   };
 
+  const handleDeleteResource = async (resource) => {
+    if (!resource?.id) return;
+    try {
+      setPageStatus(null);
+      await api.delete(`/api/media/${resource.id}`);
+      setPageStatus(createStatus('success', 'Матеріал видалено.'));
+      // remove locally and refresh current page
+      setResources((prev) => prev.filter((r) => String(r.id) !== String(resource.id)));
+      // optionally refetch first page to keep pagination consistent
+      fetchResources({ page: 0, append: false });
+    } catch (error) {
+      console.error('Error deleting media resource:', error);
+      setPageStatus(createStatus('error', getErrorMessage(error, 'Не вдалося видалити матеріал')));
+    }
+  };
+
+  const handleRequestDelete = (resource) => {
+    setDeleteTarget(resource || null);
+    setIsDeleteModalOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setIsDeleteModalOpen(false);
+    setDeleteTarget(null);
+    await handleDeleteResource(target);
+  };
+
+  const cancelDelete = () => {
+    setIsDeleteModalOpen(false);
+    setDeleteTarget(null);
+  };
+
   const handleCategoryClick = (categoryName) => {
     setActiveCategory(categoryName);
     resetSearchState();
@@ -666,57 +703,6 @@ function MediaHub() {
           <div className="mt-8 grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)] lg:gap-8">
             <AmiPanel as="aside" className="self-start p-5 lg:sticky lg:top-20">
               <div className="grid gap-5">
-                <nav aria-label="Категорії медіатеки">
-                  <h2 className="mb-3 font-sans text-sm/6 font-black uppercase tracking-wide text-muted">
-                    Категорії
-                  </h2>
-                  <ul className="m-0 grid list-none gap-1.5 p-0">
-                    <li>
-                      <button
-                        type="button"
-                        onClick={() => handleCategoryClick("all")}
-                        className={cn(
-                          'group flex min-h-11 w-full items-center gap-3 rounded-ami border px-3.5 text-left text-sm/6 font-extrabold transition-[background-color,border-color,color,transform] duration-200 ease-out focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)',
-                          activeCategory === "all"
-                            ? 'border-accent/45 bg-accent-soft text-accent-strong shadow-[inset_3px_0_0_var(--color-accent)]'
-                            : 'border-transparent bg-transparent text-text hover:border-border hover:bg-soft hover:text-ink',
-                        )}
-                      >
-                        <span className={cn('grid size-8 shrink-0 place-items-center rounded-ami', activeCategory === "all" ? 'bg-white text-accent-strong' : 'bg-soft text-muted group-hover:bg-white group-hover:text-ink')}>
-                          <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                            <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" />
-                            <rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
-                          </svg>
-                        </span>
-                        <span className="min-w-0 truncate">Усі матеріали</span>
-                      </button>
-                    </li>
-                    {categories.map((category) => {
-                      const isActive = activeCategory === category.name;
-                      return (
-                        <li key={category.id}>
-                          <button
-                            type="button"
-                            onClick={() => handleCategoryClick(category.name)}
-                            aria-pressed={isActive}
-                            className={cn(
-                              'group flex min-h-11 w-full items-center gap-3 rounded-ami border px-3.5 text-left text-sm/6 font-extrabold transition-[background-color,border-color,color,transform] duration-200 ease-out focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)',
-                              isActive
-                                ? 'border-accent/45 bg-accent-soft text-accent-strong shadow-[inset_3px_0_0_var(--color-accent)]'
-                                : 'border-transparent bg-transparent text-text hover:border-border hover:bg-soft hover:text-ink',
-                            )}
-                          >
-                            <span className={cn('grid size-8 shrink-0 place-items-center rounded-ami font-sans text-sm/5 font-black', isActive ? 'bg-white text-accent-strong' : 'bg-soft text-muted group-hover:bg-white group-hover:text-ink')}>
-                              {category.name?.charAt(0)?.toUpperCase() || "#"}
-                            </span>
-                            <span className="min-w-0 truncate">{category.name}</span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </nav>
-
                 <div>
                   <h3 className="mb-3 font-sans text-sm/6 font-black uppercase tracking-wide text-muted">
                     Сортування
@@ -841,7 +827,7 @@ function MediaHub() {
                   {!isInitialLoading && resources.length > 0 && (
                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                       {resources.map((resource) => (
-                        <MediaCard key={resource.id} resource={resource} onOpen={handleOpenResource} />
+                        <MediaCard key={resource.id} resource={resource} onOpen={handleOpenResource} onRequestDelete={handleRequestDelete} isAdmin={isAdmin} />
                       ))}
                     </div>
                   )}
@@ -875,6 +861,44 @@ function MediaHub() {
           </div>
         </AmiContainer>
       </section>
+
+      {isDeleteModalOpen && (
+        <div className="ami-fade-in fixed inset-0 z-1000 flex min-h-dvh items-center justify-center overflow-y-auto bg-ink/60 p-4 backdrop-blur-sm" onClick={cancelDelete}>
+          <div
+            className="ami-elevated ami-overlay-motion w-full max-w-lg overflow-hidden rounded-ami border border-border bg-surface-strong"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="media-delete-title"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-5">
+              <div className="min-w-0">
+                <h2 id="media-delete-title" className="m-0 font-sans text-2xl/8 font-black text-ink">Підтвердіть видалення</h2>
+                <p className="m-0 mt-1.5 text-sm/6 font-bold text-muted">Цю дію не можна буде скасувати.</p>
+              </div>
+              <button
+                className="grid size-10 shrink-0 place-items-center rounded-ami border border-border bg-surface-strong text-ink transition duration-200 hover:border-accent hover:bg-accent hover:text-white active:bg-accent-strong focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)"
+                onClick={cancelDelete}
+                type="button"
+                aria-label="Закрити"
+              >
+                <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6 6 18" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6">
+              <p className="mb-4 text-sm/6 font-bold text-muted">Ви дійсно хочете видалити цей матеріал?</p>
+              <div className="mb-4 text-sm/6 font-black text-ink">{deleteTarget?.title}</div>
+              <div className="flex justify-end gap-3">
+                <AmiButton type="button" variant="secondary" onClick={cancelDelete}>Скасувати</AmiButton>
+                <AmiButton type="button" size="lg" onClick={confirmDelete} className="!bg-red-600 !text-white">Видалити</AmiButton>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isUploadModalOpen && (
         <div className="ami-fade-in fixed inset-0 z-1000 flex min-h-dvh items-center justify-center overflow-y-auto bg-ink/60 p-4 backdrop-blur-sm" onClick={handleCloseUploadModal}>

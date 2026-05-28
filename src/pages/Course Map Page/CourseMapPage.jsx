@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useContext } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Header from '../../components/Header/Header';
 import Footer from '../../components/Footer/Footer';
@@ -8,6 +8,8 @@ import { extractCollectionPayload, readJsonPayload } from '../../utils/apiPayloa
 import { formatCreditCount, formatSubjectCount, getTotalCredits } from '../../utils/courseMap.js';
 import { AmiButton, AmiContainer, AmiPanel } from '../../ui/ami.jsx';
 import { cn } from '../../ui/cn.js';
+import { AuthContext } from '../../context/auth-context.js';
+import { SubjectModal, SelectiveGroupModal } from './CourseMapAdminModals.jsx';
 
 const BLOCK_TYPE_LABELS = {
     HUMANITARIAN: 'Гуманітарний блок',
@@ -47,6 +49,37 @@ const BLOCK_TYPE_DOT = {
     PDFC: 'bg-green-400',
 };
 
+// Prefer the real backend route first. The legacy route can be served by the frontend (HTML)
+// and would otherwise break JSON parsing.
+const SELECTIVE_GROUP_ENDPOINTS = ['/api/v1/selective-groups', '/selective-groups'];
+
+async function fetchSelectiveGroups(pathSuffix = '', options = {}) {
+    let lastResponse = null;
+
+    const method = String(options?.method || 'GET').toUpperCase();
+
+    for (const basePath of SELECTIVE_GROUP_ENDPOINTS) {
+        const response = await apiFetch(`${basePath}${pathSuffix}`, options);
+        lastResponse = response;
+
+        if (response.status === 404) {
+            continue;
+        }
+
+        // For GET requests, ensure we actually got JSON back (dev servers may return HTML).
+        if (method === 'GET') {
+            const contentType = response.headers?.get?.('content-type') || '';
+            if (contentType && !contentType.toLowerCase().includes('json')) {
+                continue;
+            }
+        }
+
+        return response;
+    }
+
+    return lastResponse;
+}
+
 function CourseMapPage() {
     const [searchParams] = useSearchParams();
     const levelFromUrl = searchParams.get('level');
@@ -56,8 +89,37 @@ function CourseMapPage() {
     const [specialties, setSpecialties] = useState([]);
     const [subjects, setSubjects] = useState([]);
     const [selectedSpecialtyId, setSelectedSpecialtyId] = useState(null);
+    const [selectiveGroups, setSelectiveGroups] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+
+    const { user } = useContext(AuthContext);
+    // Backend stores roles like "ROLE_ADMIN" or "ROLE_USER"; check for "ADMIN" substring
+    const isAdmin = Boolean(user?.role && user.role.includes('ADMIN'));
+    const [subjectModalConfig, setSubjectModalConfig] = useState({ isOpen: false, item: null, semester: 1 });
+    const [groupModalConfig, setGroupModalConfig] = useState({ isOpen: false, item: null, semester: 1 });
+
+    const handleDeleteSubject = async (id) => {
+        if (!window.confirm("Дійсно видалити предмет?")) return;
+        try {
+            await apiFetch(`/subjects/${id}`, { method: 'DELETE' });
+            setSubjects(prev => prev.filter(s => s.id !== id));
+        } catch (error) {
+            console.error(error);
+            alert("Помилка видалення");
+        }
+    };
+
+    const handleDeleteGroup = async (id) => {
+        if (!window.confirm("Дійсно видалити групу? Усі предмети групи потрібно видалити спочатку.")) return;
+        try {
+            await fetchSelectiveGroups(`/${id}`, { method: 'DELETE' });
+            setSelectiveGroups(prev => prev.filter(sg => sg.id !== id));
+        } catch (error) {
+            console.error(error);
+            alert("Помилка видалення");
+        }
+    };
 
     const visibleSpecialties = useMemo(
         () => specialties.filter((specialty) => specialty.id !== 12),
@@ -72,9 +134,10 @@ function CourseMapPage() {
             setError('');
 
             try {
-                const [specialtiesRes, subjectsRes] = await Promise.all([
+                const [specialtiesRes, subjectsRes, selectiveGroupsRes] = await Promise.all([
                     apiFetch('/specialties?size=200'),
-                    apiFetch('/subjects?size=2000&sort=semester,asc')
+                    apiFetch('/subjects?size=2000&sort=semester,asc'),
+                    fetchSelectiveGroups()
                 ]);
 
                 if (!specialtiesRes.ok) {
@@ -84,9 +147,14 @@ function CourseMapPage() {
                 if (!subjectsRes.ok) {
                     throw new Error('Не вдалося завантажити предмети.');
                 }
+                
+                if (!selectiveGroupsRes.ok) {
+                     console.warn('Не вдалося завантажити вибіркові групи. Вони можуть бути недоступні.');
+                }
 
                 const specialtiesPayload = await readJsonPayload(specialtiesRes);
                 const subjectsPayload = await readJsonPayload(subjectsRes);
+                const selectiveGroupsPayload = selectiveGroupsRes.ok ? await readJsonPayload(selectiveGroupsRes) : [];
 
                 if (!isMounted) {
                     return;
@@ -98,10 +166,12 @@ function CourseMapPage() {
 
                 const loadedSpecialties = extractCollectionPayload(specialtiesPayload);
                 const loadedSubjects = extractCollectionPayload(subjectsPayload);
+                const loadedSelectiveGroups = Array.isArray(selectiveGroupsPayload) ? selectiveGroupsPayload : extractCollectionPayload(selectiveGroupsPayload);
                 const loadedVisibleSpecialties = loadedSpecialties.filter((specialty) => specialty.id !== 12);
 
                 setSpecialties(loadedSpecialties);
                 setSubjects(loadedSubjects);
+                setSelectiveGroups(loadedSelectiveGroups || []);
 
                 if (loadedVisibleSpecialties.length > 0) {
                     const matchedByQuery = loadedVisibleSpecialties.find((specialty) => {
@@ -173,21 +243,99 @@ function CourseMapPage() {
             return acc;
         }, {});
     }, [filteredSubjects]);
+
+    const selectiveGroupsMap = useMemo(() => {
+        const map = {};
+        (selectiveGroups || []).forEach((g) => {
+            map[g.id] = g;
+        });
+        return map;
+    }, [selectiveGroups]);
+
+    // Merge subjects that belong to the same selective group into a single display item
+    const displayFilteredSubjects = useMemo(() => {
+        const grouped = {};
+        const others = [];
+
+        filteredSubjects.forEach((subject) => {
+            if (subject.selectiveGroupId) {
+                const sg = subject.selectiveGroupId;
+                if (!grouped[sg]) {
+                    grouped[sg] = { options: [], semester: subject.semester };
+                }
+                grouped[sg].options.push(subject);
+            } else {
+                others.push(subject);
+            }
+        });
+
+        const merged = [...others];
+        Object.keys(grouped).forEach((sgId) => {
+            merged.push({
+                id: `sg-${sgId}`,
+                isSelectiveGroup: true,
+                selectiveGroupId: Number(sgId),
+                name: selectiveGroupsMap[sgId]?.name || 'Вибіркова група',
+                options: grouped[sgId].options,
+                semester: grouped[sgId].semester
+            });
+        });
+
+        return merged.sort((a, b) => {
+            if ((a.semester || 0) !== (b.semester || 0)) {
+                return (a.semester || 0) - (b.semester || 0);
+            }
+
+            const aName = a.isSelectiveGroup ? (a.name || '') : (a.name || '');
+            const bName = b.isSelectiveGroup ? (b.name || '') : (b.name || '');
+            return aName.localeCompare(bName, 'uk');
+        });
+    }, [filteredSubjects, selectiveGroupsMap]);
+
+    const displaySubjectsBySemester = useMemo(() => {
+        return displayFilteredSubjects.reduce((acc, item) => {
+            const semester = item.semester || 0;
+            if (!acc[semester]) acc[semester] = [];
+            acc[semester].push(item);
+            return acc;
+        }, {});
+    }, [displayFilteredSubjects]);
+
+    const displayTotalCredits = useMemo(() => {
+        return displayFilteredSubjects.reduce((total, item) => {
+            if (item.isSelectiveGroup) {
+                const credits = Number(item.options?.[0]?.credits);
+                return Number.isFinite(credits) ? total + credits : total;
+            }
+            const credits = Number(item?.credits);
+            return Number.isFinite(credits) ? total + credits : total;
+        }, 0);
+    }, [displayFilteredSubjects]);
+
+    const displaySubjectsCount = displayFilteredSubjects.length;
+
+    const displayBlockBreakdown = useMemo(() => {
+        const counts = { HUMANITARIAN: 0, SCIENTIFIC: 0, PROFESSIONAL: 0, PDFC: 0, OTHER: 0 };
+        displayFilteredSubjects.forEach((item) => {
+            let key = 'OTHER';
+            if (item.isSelectiveGroup) {
+                const bt = item.options?.[0]?.blockType;
+                key = bt in counts ? bt : 'OTHER';
+            } else {
+                key = item.blockType in counts ? item.blockType : 'OTHER';
+            }
+            counts[key] += 1;
+        });
+        return counts;
+    }, [displayFilteredSubjects]);
     
     const semesters = degreeLevel === 'bachelor'
         ? [1, 2, 3, 4, 5, 6, 7, 8]
         : [1, 2, 3, 4];
-    const totalCredits = getTotalCredits(filteredSubjects);
+    const totalCredits = displayTotalCredits; 
     const selectedDegreeLabel = degreeLevel === 'bachelor' ? 'Бакалавр' : 'Магістр';
 
-    const blockBreakdown = useMemo(() => {
-        const counts = { HUMANITARIAN: 0, SCIENTIFIC: 0, PROFESSIONAL: 0, PDFC: 0, OTHER: 0 };
-        filteredSubjects.forEach((subject) => {
-            const key = subject.blockType in counts ? subject.blockType : 'OTHER';
-            counts[key] += 1;
-        });
-        return counts;
-    }, [filteredSubjects]);
+    
 
     return (
         <div className="min-h-dvh bg-page text-ink">
@@ -288,9 +436,9 @@ function CourseMapPage() {
                                 <dd className="m-0 mt-1 font-sans text-base/6 font-black text-ink">{selectedDegreeLabel}</dd>
                             </div>
                             <div className="rounded-ami border border-border bg-soft px-4 py-3 text-center">
-                                <dt className="text-xs/5 font-black uppercase tracking-wide text-muted">Предметів</dt>
-                                <dd className="m-0 mt-1 font-sans text-base/6 font-black text-ink">{filteredSubjects.length}</dd>
-                            </div>
+                                    <dt className="text-xs/5 font-black uppercase tracking-wide text-muted">Предметів</dt>
+                                    <dd className="m-0 mt-1 font-sans text-base/6 font-black text-ink">{displaySubjectsCount}</dd>
+                                </div>
                             <div className="rounded-ami border border-border bg-soft px-4 py-3 text-center">
                                 <dt className="text-xs/5 font-black uppercase tracking-wide text-muted">Кредитів</dt>
                                 <dd className="m-0 mt-1 font-sans text-base/6 font-black text-ink">{totalCredits}</dd>
@@ -302,7 +450,7 @@ function CourseMapPage() {
                 <AmiPanel className="p-5 sm:p-6">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                         <h2 className="m-0 font-sans text-lg/7 font-black text-ink">Легенда блоків</h2>
-                        <span className="text-xs/5 font-bold text-muted">{filteredSubjects.length} предметів у поточному виборі</span>
+                        <span className="text-xs/5 font-bold text-muted">{displaySubjectsCount} предметів у поточному виборі</span>
                     </div>
                     <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                         {[
@@ -316,7 +464,7 @@ function CourseMapPage() {
                                     <span className={cn('size-2.5 rounded-full', BLOCK_TYPE_DOT[key])} aria-hidden="true" />
                                     {label}
                                 </span>
-                                <span className="rounded-ami bg-white/70 px-2 py-0.5 text-xs/4 font-black">{blockBreakdown[key] || 0}</span>
+                                <span className="rounded-ami bg-white/70 px-2 py-0.5 text-xs/4 font-black">{displayBlockBreakdown[key] || 0}</span>
                             </div>
                         ))}
                     </div>
@@ -373,8 +521,8 @@ function CourseMapPage() {
                 {!loading && !error && filteredSubjects.length > 0 && (
                     <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                         {semesters.map((semester) => {
-                            const semesterSubjects = subjectsBySemester[semester] || [];
-                            const semesterCredits = getTotalCredits(semesterSubjects);
+                            const semesterSubjects = displaySubjectsBySemester[semester] || [];
+                            const semesterCredits = getTotalCredits(semesterSubjects.map(s => s.isSelectiveGroup ? s.options?.[0] : s));
 
                             return (
                                 <AmiPanel as="article" key={semester} className="flex flex-col p-5">
@@ -388,6 +536,24 @@ function CourseMapPage() {
                                                 <p className="m-0 text-xs/5 font-bold text-muted">{formatSubjectCount(semesterSubjects.length)} · {formatCreditCount(semesterCredits)}</p>
                                             </div>
                                         </div>
+                                        {isAdmin && selectedSpecialtyId && (
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => setSubjectModalConfig({ isOpen: true, item: null, semester: Number(semester) })}
+                                                    className="inline-flex size-8 items-center justify-center rounded-md bg-accent-soft text-accent-strong transition-colors hover:bg-accent hover:text-white"
+                                                    title="Додати предмет"
+                                                >
+                                                    <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4"/></svg>
+                                                </button>
+                                                <button
+                                                    onClick={() => setGroupModalConfig({ isOpen: true, item: null, semester: Number(semester) })}
+                                                    className="inline-flex size-8 items-center justify-center rounded-md bg-purple-50 text-purple-600 transition-colors hover:bg-purple-500 hover:text-white"
+                                                    title="Додати групу вибору"
+                                                >
+                                                    <svg className="size-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                                                </button>
+                                            </div>
+                                        )}
                                     </header>
 
                                     {semesterSubjects.length === 0 ? (
@@ -396,58 +562,136 @@ function CourseMapPage() {
                                         </p>
                                     ) : (
                                         <ul className="mt-4 grid list-none gap-3 p-0">
-                                            {semesterSubjects.map((subject) => (
+                                            {semesterSubjects.map((item) => (
                                                 <li
-                                                    key={subject.id}
+                                                    key={item.id}
                                                     className="group relative overflow-hidden rounded-ami border border-border bg-surface p-4 transition-[border-color,transform,box-shadow] duration-200 ease-out hover:-translate-y-px hover:border-accent/40 hover:bg-white hover:shadow-[0_4px_18px_rgb(15_23_42/0.06)] motion-reduce:hover:translate-y-0"
                                                 >
-                                                    <span className={cn('absolute left-0 top-0 h-full w-1', BLOCK_TYPE_DOT[subject.blockType] || 'bg-border-strong')} aria-hidden="true" />
-                                                    <div className="flex items-start justify-between gap-3 pl-1.5">
-                                                        <h4 className="m-0 font-sans text-base/6 font-black text-ink transition group-hover:text-accent-strong">{subject.name}</h4>
-                                                        {subject.credits != null && (
-                                                            <span className="shrink-0 rounded-ami border border-accent/30 bg-accent-soft px-2.5 py-1 text-xs/4 font-black text-accent-strong">{subject.credits} кр.</span>
-                                                        )}
-                                                    </div>
+                                                    {item.isSelectiveGroup ? (
+                                                        <>
+                                                            <span className={cn('absolute left-0 top-0 h-full w-1', BLOCK_TYPE_DOT[item.options?.[0]?.blockType] || 'bg-border-strong')} aria-hidden="true" />
+                                                            <div className="flex items-start justify-between gap-3 pl-1.5">
+                                                                <div>
+                                                                    <h4 className="m-0 flex-1 min-w-0 wrap-break-words font-sans text-base/6 font-black text-ink transition group-hover:text-accent-strong">{item.name}</h4>
+                                                                    <p className="m-0 text-xs/5 font-bold text-muted">Оберіть {selectiveGroupsMap[item.selectiveGroupId]?.minSelectableSubjects || 1} з {item.options.length}</p>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    {isAdmin && (
+                                                                        <div className="flex items-center gap-1 mr-2 relative z-20 shrink-0">
+                                                                            <button onClick={() => setGroupModalConfig({ isOpen: true, item: selectiveGroupsMap[item.selectiveGroupId], semester: item.semester })} className="inline-flex items-center justify-center p-1 rounded bg-white border border-border text-purple-600 hover:bg-purple-50 transition z-20" title="Редагувати групу">
+                                                                                <svg className="size-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                                                                <span className="sr-only">Редагувати групу</span>
+                                                                            </button>
+                                                                            <button onClick={() => handleDeleteGroup(item.selectiveGroupId)} className="inline-flex items-center justify-center p-1 rounded bg-white border border-border text-red-600 hover:bg-red-50 transition z-20" title="Видалити групу">
+                                                                                <svg className="size-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                                                <span className="sr-only">Видалити групу</span>
+                                                                            </button>
+                                                                        </div>
+                                                                    )}
+                                                                    {item.options?.[0]?.credits != null && (
+                                                                        <span className="shrink-0 rounded-ami border border-accent/30 bg-accent-soft px-2.5 py-1 text-xs/4 font-black text-accent-strong">{item.options[0].credits} кр.</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
 
-                                                    <div className="mt-3 flex flex-wrap gap-2 pl-1.5">
-                                                        <span className={cn('inline-flex items-center gap-1.5 rounded-ami border px-2.5 py-1 text-xs/4 font-black', BLOCK_TYPE_STYLES[subject.blockType] || 'border-border bg-white text-muted')}>
-                                                            <span className={cn('size-1.5 rounded-full', BLOCK_TYPE_DOT[subject.blockType] || 'bg-muted')} aria-hidden="true" />
-                                                            {BLOCK_TYPE_SHORT[subject.blockType] || 'Без блоку'}
-                                                        </span>
-                                                        <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-2.5 py-1 text-xs/4 font-black text-muted">
-                                                            <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                                                <path d="M9 11.5 11 13.5l4-4" /><circle cx="12" cy="12" r="9" />
-                                                            </svg>
-                                                            {EXAM_TYPE_LABELS[subject.examType] || 'Без контролю'}
-                                                        </span>
-                                                    </div>
+                                                            <div className="mt-3 flex flex-wrap gap-2 pl-1.5">
+                                                                <span className={cn('inline-flex items-center gap-1.5 rounded-ami border px-2.5 py-1 text-xs/4 font-black', BLOCK_TYPE_STYLES[item.options?.[0]?.blockType] || 'border-border bg-white text-muted')}>
+                                                                    <span className={cn('size-1.5 rounded-full', BLOCK_TYPE_DOT[item.options?.[0]?.blockType] || 'bg-muted')} aria-hidden="true" />
+                                                                    {BLOCK_TYPE_SHORT[item.options?.[0]?.blockType] || 'Без блоку'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="mt-3 pl-1.5">
+                                                                <ul className="m-0 flex list-none flex-col gap-2 p-0">
+                                                                    {item.options.map((opt, idx) => (
+                                                                        <li key={opt.id} className="flex items-start gap-2 text-sm/5 font-bold text-muted transition hover:text-ink">
+                                                                            <span className="shrink-0 font-black text-accent-strong">{idx + 1}.</span>
+                                                                            <span className="flex-1 flex justify-between items-center group/opt relative">
+                                                                                <span>
+                                                                                    {opt.name}
+                                                                                    <span className="ml-2 inline-flex items-center gap-1 opacity-70 text-xs px-1.5 py-0.5 rounded border border-border">
+                                                                                        {EXAM_TYPE_LABELS[opt.examType] || 'Без контролю'}
+                                                                                        {opt.credits != null ? ` · ${opt.credits} кр.` : ''}
+                                                                                    </span>
+                                                                                </span>
+                                                                                {isAdmin && (
+                                                                                    <span className="flex items-center gap-1 z-20 shrink-0">
+                                                                                        <button onClick={() => setSubjectModalConfig({ isOpen: true, item: opt, semester: item.semester })} className="inline-flex items-center justify-center p-1 rounded bg-white border border-border text-accent-strong hover:bg-accent-soft transition z-20" title="Редагувати">
+                                                                                            <svg className="size-3 text-accent-strong" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                                                                            <span className="sr-only">Редагувати предмет</span>
+                                                                                        </button>
+                                                                                        <button onClick={() => handleDeleteSubject(opt.id)} className="inline-flex items-center justify-center p-1 rounded bg-white border border-border text-red-600 hover:bg-red-50 transition z-20" title="Видалити">
+                                                                                            <svg className="size-3 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                                                            <span className="sr-only">Видалити предмет</span>
+                                                                                        </button>
+                                                                                    </span>
+                                                                                )}
+                                                                            </span>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <span className={cn('absolute left-0 top-0 h-full w-1', BLOCK_TYPE_DOT[item.blockType] || 'bg-border-strong')} aria-hidden="true" />
+                                                            <div className="flex items-start justify-between gap-3 pl-1.5">
+                                                                <h4 className="m-0 flex-1 min-w-0 wrap-break-words font-sans text-base/6 font-black text-ink transition group-hover:text-accent-strong">{item.name}</h4>
+                                                                <div className="flex items-center gap-2">
+                                                                    {isAdmin && (
+                                                                        <div className="flex items-center gap-1 mr-2 relative z-20 shrink-0">
+                                                                            <button onClick={() => setSubjectModalConfig({ isOpen: true, item, semester: item.semester })} className="inline-flex items-center justify-center p-1 rounded bg-white border border-border text-accent-strong hover:bg-accent-soft transition z-20" title="Редагувати предмет">
+                                                                                <svg className="size-4 text-accent-strong" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                                                                <span className="sr-only">Редагувати предмет</span>
+                                                                            </button>
+                                                                            <button onClick={() => handleDeleteSubject(item.id)} className="inline-flex items-center justify-center p-1 rounded bg-white border border-border text-red-600 hover:bg-red-50 transition z-20" title="Видалити предмет">
+                                                                                <svg className="size-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                                                <span className="sr-only">Видалити предмет</span>
+                                                                            </button>
+                                                                        </div>
+                                                                    )}
+                                                                    {item.credits != null && (
+                                                                        <span className="shrink-0 rounded-ami border border-accent/30 bg-accent-soft px-2.5 py-1 text-xs/4 font-black text-accent-strong">{item.credits} кр.</span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
 
-                                                    {subject.taughtBy && (
-                                                        <p className="m-0 mt-3 pl-1.5 text-xs/5 font-bold text-muted">
-                                                            <span className="text-ink">Викладач:</span> {subject.taughtBy}
-                                                        </p>
-                                                    )}
+                                                            <div className="mt-3 flex flex-wrap gap-2 pl-1.5">
+                                                                <span className={cn('inline-flex items-center gap-1.5 rounded-ami border px-2.5 py-1 text-xs/4 font-black', BLOCK_TYPE_STYLES[item.blockType] || 'border-border bg-white text-muted')}>
+                                                                    <span className={cn('size-1.5 rounded-full', BLOCK_TYPE_DOT[item.blockType] || 'bg-muted')} aria-hidden="true" />
+                                                                    {BLOCK_TYPE_SHORT[item.blockType] || 'Без блоку'}
+                                                                </span>
+                                                                <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-white px-2.5 py-1 text-xs/4 font-black text-muted">
+                                                                    <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                                        <path d="M9 11.5 11 13.5l4-4" /><circle cx="12" cy="12" r="9" />
+                                                                    </svg>
+                                                                    {EXAM_TYPE_LABELS[item.examType] || 'Без контролю'}
+                                                                </span>
+                                                            </div>
 
-                                                    {/* {subject.description && (
-                                                        <p className="m-0 mt-2 pl-1.5 text-sm/5 font-bold text-text">{subject.description}</p>
-                                                    )} */}
+                                                            {item.taughtBy && (
+                                                                <p className="m-0 mt-3 pl-1.5 text-xs/5 font-bold text-muted">
+                                                                    <span className="text-ink">Викладач:</span> {item.taughtBy}
+                                                                </p>
+                                                            )}
 
-                                                    {subject.syllabusLink && (
-                                                        <AmiButton
-                                                            as="a"
-                                                            href={subject.syllabusLink}
-                                                            target="_blank"
-                                                            rel="noreferrer"
-                                                            variant="soft"
-                                                            size="sm"
-                                                            className="mt-3 ml-1.5 no-underline"
-                                                        >
-                                                            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
-                                                                <path d="M14 2v6h6M9 13h6M9 17h6" />
-                                                            </svg>
-                                                            Силабус
-                                                        </AmiButton>
+                                                            {item.syllabusLink && (
+                                                                <AmiButton
+                                                                    as="a"
+                                                                    href={item.syllabusLink}
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    variant="soft"
+                                                                    size="sm"
+                                                                    className="mt-3 ml-1.5 no-underline"
+                                                                >
+                                                                    <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+                                                                        <path d="M14 2v6h6M9 13h6M9 17h6" />
+                                                                    </svg>
+                                                                    Силабус
+                                                                </AmiButton>
+                                                            )}
+                                                        </>
                                                     )}
                                                 </li>
                                             ))}
@@ -460,6 +704,40 @@ function CourseMapPage() {
                 )}
             </AmiContainer>
             <Footer />
+            {isAdmin && (
+                <>
+                    <SubjectModal
+                        isOpen={subjectModalConfig.isOpen}
+                        onClose={() => setSubjectModalConfig({ isOpen: false, item: null, semester: 1 })}
+                        initialData={subjectModalConfig.item}
+                        specialties={specialties}
+                        selectedSpecialtyId={selectedSpecialtyId}
+                        selectedSemester={subjectModalConfig.semester}
+                        selectiveGroups={selectiveGroups}
+                        onSaved={(savedItem, action) => {
+                            if (action === 'create') {
+                                setSubjects(prev => [...prev, savedItem]);
+                            } else {
+                                setSubjects(prev => prev.map(s => s.id === savedItem.id ? savedItem : s));
+                            }
+                        }}
+                    />
+                    <SelectiveGroupModal
+                        isOpen={groupModalConfig.isOpen}
+                        onClose={() => setGroupModalConfig({ isOpen: false, item: null, semester: 1 })}
+                        initialData={groupModalConfig.item}
+                        specialties={specialties}
+                        selectedSemester={groupModalConfig.semester}
+                        onSaved={(savedItem, action) => {
+                            if (action === 'create') {
+                                setSelectiveGroups(prev => [...prev, savedItem]);
+                            } else {
+                                setSelectiveGroups(prev => prev.map(g => g.id === savedItem.id ? savedItem : g));
+                            }
+                        }}
+                    />
+                </>
+            )}
         </div>
     );
 }

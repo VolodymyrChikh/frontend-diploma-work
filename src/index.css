@@ -452,7 +452,26 @@ body {
   }
 
   .ami-mobile-nav {
-    display: grid;
+    display: inline-flex;
+    left: 50%;
+    right: auto;
+    width: fit-content;
+    max-width: calc(100vw - 1.75rem);
+    transform: translateX(-50%);
+    align-items: center;
+    justify-content: center;
+    gap: clamp(0.25rem, 1.4vw, 0.5rem);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .ami-mobile-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ami-mobile-nav > * {
+    flex: 0 0 auto;
   }
 }
 

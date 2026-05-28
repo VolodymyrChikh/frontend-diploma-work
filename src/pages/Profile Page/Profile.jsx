@@ -9,20 +9,22 @@ import { AuthContext } from "../../context/auth-context.js";
 import { canUseAuthenticatedAction, createSignInRedirect } from "../../auth/guards.js";
 import { createStatus, getErrorMessage } from "../../utils/messages.js";
 import {
-  PROFILE_GROUP_OPTIONS,
   createProfileFormState,
   createProfileUpdatePayload,
   getProfileResponseErrorMessage,
   isAuthExpiredResponse,
-  normalizeGithubUrl
+  normalizeGithubUrl,
+  normalizeProfileGroupName
 } from "./profileForm.js";
 import { AmiButton, AmiContainer, AmiPanel } from "../../ui/ami.jsx";
 import { cn } from "../../ui/cn.js";
+import ProfileSchedule from "./ProfileSchedule.jsx";
 
 const TABS = [
   { id: "personal", label: "Особисті дані", available: true },
-  { id: "security", label: "Безпека", available: false },
-  { id: "notifications", label: "Сповіщення", available: false },
+  { id: "schedule", label: "Розклад", available: true },
+  // { id: "security", label: "Безпека", available: false },
+  // { id: "notifications", label: "Сповіщення", available: false },
 ];
 
 function Profile() {
@@ -30,12 +32,13 @@ function Profile() {
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [specialties, setSpecialties] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState(null);
   const [activeTab, setActiveTab] = useState("personal");
   const [formData, setFormData] = useState({
     specialtyId: "",
-    groupName: "",
+    groupId: "",
     bio: "",
     githubLink: ""
   });
@@ -65,10 +68,26 @@ function Profile() {
     }
   };
 
+  const fetchGroups = async () => {
+    try {
+      const response = await apiFetch("/api/academic-groups");
+      if (response.ok) {
+        const data = await response.json();
+        setGroups(data.content || data);
+      }
+    } catch (error) {
+      console.error("Error fetching academic groups:", error);
+      setStatus(createStatus("error", "Не вдалося завантажити список груп"));
+    }
+  };
+
   const startEditing = () => {
     setIsEditing(true);
     if (specialties.length === 0) {
       fetchSpecialties();
+    }
+    if (groups.length === 0) {
+      fetchGroups();
     }
   };
 
@@ -260,7 +279,7 @@ function Profile() {
   const profileSummaryItems = [
     { key: "role", label: "Статус", value: role },
     { key: "specialty", label: "Спеціальність", value: user?.specialtyResponse?.name || "Не вказано" },
-    { key: "group", label: "Група", value: user?.groupName || "Не вказано" },
+    { key: "group", label: "Група", value: user?.groupResponse?.name || normalizeProfileGroupName(user?.groupName) || "Не вказано" },
     { key: "github", label: "GitHub", value: user?.githubLink ? "Додано" : "Не вказано" },
   ];
 
@@ -429,7 +448,7 @@ function Profile() {
                 )}
 
                 <AmiPanel className="overflow-hidden">
-                  <div role="tablist" aria-label="Налаштування профілю" className="flex gap-1 overflow-x-auto border-b border-border bg-surface-strong px-3 pt-3 sm:px-5 sm:pt-4">
+                  <div role="tablist" aria-label="Налаштування профілю" className="flex gap-1 overflow-visible border-b border-border bg-surface-strong px-3 pt-3 sm:px-5 sm:pt-4">
                     {TABS.map((tab) => {
                       const isActive = activeTab === tab.id;
                       return (
@@ -462,160 +481,166 @@ function Profile() {
                     })}
                   </div>
 
-                  <div className="grid gap-5 p-5 sm:p-6 md:grid-cols-2">
-                    <div>
-                      <label htmlFor="profile-specialty" className={labelClassName}>Моя спеціальність</label>
-                      {isEditing ? (
-                        <div className="relative">
-                          <select
-                            id="profile-specialty"
-                            name="specialtyId"
-                            value={formData.specialtyId}
-                            onChange={handleInputChange}
-                            className={cn(fieldClassName, "appearance-none pr-11")}
-                          >
-                            <option value="">Оберіть спеціальність</option>
-                            {specialties.map((spec) => (
-                              <option key={spec.id} value={spec.id}>
-                                {spec.name}
-                              </option>
-                            ))}
-                          </select>
-                          <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="m6 9 6 6 6-6" />
-                            </svg>
-                          </span>
-                        </div>
-                      ) : (
-                        <span className={user.specialtyResponse?.name ? valueClassName : emptyValueClassName}>
-                          {user.specialtyResponse?.name || "Не вказано"}
-                        </span>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className={labelClassName}>Email</label>
-                      <span className={cn(valueClassName, "gap-2")}>
-                        <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <rect x="3" y="5" width="18" height="14" rx="2" />
-                          <path d="m3 7 9 6 9-6" />
-                        </svg>
-                        <span className="min-w-0 truncate">{user.email}</span>
-                      </span>
-                    </div>
-
-                    <div>
-                      <label htmlFor="profile-group" className={labelClassName}>Група</label>
-                      {isEditing ? (
-                        <div className="relative">
-                          <select
-                            id="profile-group"
-                            name="groupName"
-                            value={formData.groupName}
-                            onChange={handleInputChange}
-                            className={cn(fieldClassName, "appearance-none pr-11")}
-                          >
-                            <option value="">Оберіть групу</option>
-                            {PROFILE_GROUP_OPTIONS.map((groupName) => (
-                              <option key={groupName} value={groupName}>
-                                {groupName}
-                              </option>
-                            ))}
-                          </select>
-                          <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="m6 9 6 6 6-6" />
-                            </svg>
-                          </span>
-                        </div>
-                      ) : (
-                        <span className={user.groupName ? valueClassName : emptyValueClassName}>
-                          {user.groupName || "Не вказано"}
-                        </span>
-                      )}
-                    </div>
-
-                    <div>
-                      <label htmlFor="profile-github" className={labelClassName}>GitHub</label>
-                      {isEditing ? (
-                        <div className="relative">
-                          <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">
-                            <svg viewBox="0 0 24 24" className="size-4" fill="currentColor">
-                              <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.92.58.1.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.52-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.37-5.25 5.65.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12c0-6.35-5.15-11.5-11.5-11.5Z" />
-                            </svg>
-                          </span>
-                          <input
-                            id="profile-github"
-                            type="text"
-                            name="githubLink"
-                            value={formData.githubLink}
-                            onChange={handleInputChange}
-                            className={cn(fieldClassName, "pl-11")}
-                            placeholder="https://github.com/username"
-                          />
-                        </div>
-                      ) : (
-                        user.githubLink ? (
-                          <a
-                            href={normalizeGithubUrl(user.githubLink)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex min-h-12 w-full items-center gap-2 rounded-ami border border-border bg-soft px-4 py-2 text-sm/6 font-bold text-accent-strong no-underline transition hover:border-accent/40 hover:bg-accent-soft focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)"
-                          >
-                            <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="currentColor" aria-hidden="true">
-                              <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.92.58.1.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.52-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.37-5.25 5.65.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12c0-6.35-5.15-11.5-11.5-11.5Z" />
-                            </svg>
-                            <span className="min-w-0 truncate">{user.githubLink}</span>
-                            <svg viewBox="0 0 24 24" className="size-3.5 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                              <path d="M7 17 17 7M9 7h8v8" />
-                            </svg>
-                          </a>
+                  {activeTab === 'personal' ? (
+                    <div className="grid gap-5 p-5 sm:p-6 md:grid-cols-2">
+                      <div>
+                        <label htmlFor="profile-specialty" className={labelClassName}>Моя спеціальність</label>
+                        {isEditing ? (
+                          <div className="relative">
+                            <select
+                              id="profile-specialty"
+                              name="specialtyId"
+                              value={formData.specialtyId}
+                              onChange={handleInputChange}
+                              className={cn(fieldClassName, "appearance-none pr-11")}
+                            >
+                              <option value="">Оберіть спеціальність</option>
+                              {specialties.map((spec) => (
+                                <option key={spec.id} value={spec.id}>
+                                  {spec.name}
+                                </option>
+                              ))}
+                            </select>
+                            <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">
+                              <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="m6 9 6 6 6-6" />
+                              </svg>
+                            </span>
+                          </div>
                         ) : (
-                          <span className={emptyValueClassName}>Не вказано</span>
-                        )
-                      )}
-                    </div>
+                          <span className={user.specialtyResponse?.name ? valueClassName : emptyValueClassName}>
+                            {user.specialtyResponse?.name || "Не вказано"}
+                          </span>
+                        )}
+                      </div>
 
-                    <div className="md:col-span-2">
-                      <label htmlFor="profile-bio" className={labelClassName}>Про себе</label>
-                      {isEditing ? (
-                        <textarea
-                          id="profile-bio"
-                          name="bio"
-                          value={formData.bio}
-                          onChange={handleInputChange}
-                          className={cn(fieldClassName, "min-h-32 py-3 resize-y")}
-                          placeholder="Розкажіть трохи про себе..."
-                          maxLength={500}
-                        />
-                      ) : (
-                        <span className={cn(user.bio ? valueClassName : emptyValueClassName, "min-h-24 items-start whitespace-pre-wrap py-3")}>
-                          {user.bio || "Не вказано"}
+                      <div>
+                        <label className={labelClassName}>Email</label>
+                        <span className={cn(valueClassName, "gap-2")}>
+                          <svg viewBox="0 0 24 24" className="size-4 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                            <rect x="3" y="5" width="18" height="14" rx="2" />
+                            <path d="m3 7 9 6 9-6" />
+                          </svg>
+                          <span className="min-w-0 truncate">{user.email}</span>
                         </span>
-                      )}
-                      {isEditing && (
-                        <p className="m-0 mt-1.5 text-right text-xs/5 font-bold text-muted">
-                          {formData.bio.length}/500
-                        </p>
-                      )}
-                    </div>
-                  </div>
+                      </div>
 
-                  {isEditing && (
-                    <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border bg-surface px-5 py-4 sm:px-6">
-                      <AmiButton type="button" variant="secondary" onClick={cancelEditing} disabled={isSaving} size="lg">
-                        Скасувати
-                      </AmiButton>
-                      <AmiButton type="button" onClick={handleSave} loading={isSaving} size="lg">
-                        <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
-                          <path d="M17 21v-8H7v8M7 3v5h8" />
-                        </svg>
-                        Зберегти
-                      </AmiButton>
+                      <div>
+                        <label htmlFor="profile-group" className={labelClassName}>Група</label>
+                        {isEditing ? (
+                          <div className="relative">
+                            <select
+                              id="profile-group"
+                              name="groupId"
+                              value={formData.groupId}
+                              onChange={handleInputChange}
+                              className={cn(fieldClassName, "appearance-none pr-11")}
+                            >
+                              <option value="">Оберіть групу</option>
+                              {groups.map((group) => (
+                                <option key={group.id ?? group.name} value={group.id}>
+                                  {group.name}
+                                </option>
+                              ))}
+                            </select>
+                            <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">
+                              <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="m6 9 6 6 6-6" />
+                              </svg>
+                            </span>
+                          </div>
+                        ) : (
+                          <span className={(user.groupResponse?.name || user.groupName) ? valueClassName : emptyValueClassName}>
+                            {user.groupResponse?.name || normalizeProfileGroupName(user.groupName) || "Не вказано"}
+                          </span>
+                        )}
+                      </div>
+
+                      <div>
+                        <label htmlFor="profile-github" className={labelClassName}>GitHub</label>
+                        {isEditing ? (
+                          <div className="relative">
+                            <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true">
+                              <svg viewBox="0 0 24 24" className="size-4" fill="currentColor">
+                                <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.92.58.1.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.52-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.37-5.25 5.65.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12c0-6.35-5.15-11.5-11.5-11.5Z" />
+                              </svg>
+                            </span>
+                            <input
+                              id="profile-github"
+                              type="text"
+                              name="githubLink"
+                              value={formData.githubLink}
+                              onChange={handleInputChange}
+                              className={cn(fieldClassName, "pl-11")}
+                              placeholder="https://github.com/username"
+                            />
+                          </div>
+                        ) : (
+                          user.githubLink ? (
+                            <a
+                              href={normalizeGithubUrl(user.githubLink)}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex min-h-12 w-full items-center gap-2 rounded-ami border border-border bg-soft px-4 py-2 text-sm/6 font-bold text-accent-strong no-underline transition hover:border-accent/40 hover:bg-accent-soft focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--color-focus)"
+                            >
+                              <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="currentColor" aria-hidden="true">
+                                <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.92.58.1.79-.25.79-.56v-2.16c-3.2.7-3.87-1.36-3.87-1.36-.52-1.32-1.27-1.67-1.27-1.67-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.52-2.55-.29-5.24-1.27-5.24-5.66 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.04 0 0 .96-.31 3.15 1.17a10.94 10.94 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.58.23 2.75.11 3.04.74.8 1.18 1.82 1.18 3.07 0 4.4-2.69 5.37-5.25 5.65.41.36.78 1.06.78 2.13v3.16c0 .31.21.67.8.56C20.21 21.39 23.5 17.08 23.5 12c0-6.35-5.15-11.5-11.5-11.5Z" />
+                            </svg>
+                              <span className="min-w-0 truncate">{user.githubLink}</span>
+                              <svg viewBox="0 0 24 24" className="size-3.5 shrink-0 text-muted" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <path d="M7 17 17 7M9 7h8v8" />
+                              </svg>
+                            </a>
+                          ) : (
+                            <span className={emptyValueClassName}>Не вказано</span>
+                          )
+                        )}
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <label htmlFor="profile-bio" className={labelClassName}>Про себе</label>
+                        {isEditing ? (
+                          <textarea
+                            id="profile-bio"
+                            name="bio"
+                            value={formData.bio}
+                            onChange={handleInputChange}
+                            className={cn(fieldClassName, "min-h-32 py-3 resize-y")}
+                            placeholder="Розкажіть трохи про себе..."
+                            maxLength={500}
+                          />
+                        ) : (
+                          <span className={cn(user.bio ? valueClassName : emptyValueClassName, "min-h-24 items-start whitespace-pre-wrap py-3")}>
+                            {user.bio || "Не вказано"}
+                          </span>
+                        )}
+                        {isEditing && (
+                          <p className="m-0 mt-1.5 text-right text-xs/5 font-bold text-muted">
+                            {formData.bio.length}/500
+                          </p>
+                        )}
+                      </div>
+
+                      {isEditing && (
+                        <div className="flex flex-wrap items-center justify-end gap-3 border-t border-border bg-surface px-5 py-4 sm:px-6">
+                          <AmiButton type="button" variant="secondary" onClick={cancelEditing} disabled={isSaving} size="lg">
+                            Скасувати
+                          </AmiButton>
+                          <AmiButton type="button" onClick={handleSave} loading={isSaving} size="lg">
+                            <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" />
+                              <path d="M17 21v-8H7v8M7 3v5h8" />
+                            </svg>
+                            Зберегти
+                          </AmiButton>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  ) : activeTab === 'schedule' ? (
+                    <div className="p-5 sm:p-6 md:col-span-2">
+                      <ProfileSchedule user={user} />
+                    </div>
+                  ) : null}
                 </AmiPanel>
               </div>
             </AmiContainer>

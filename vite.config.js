@@ -23,6 +23,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/parse-schedule': scheduleProxy,
         '/api': apiProxy,
+        '/ai': apiProxy,
         '/auth': apiProxy,
         '/categories': apiProxy,
         '/comments': apiProxy,
